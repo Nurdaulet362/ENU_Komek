@@ -2,6 +2,7 @@
 """Loopback-only MVP server. Local Ollama chat; original files are served by allowlisted IDs."""
 import argparse
 import json
+from contextlib import nullcontext
 import mimetypes
 import os
 import re
@@ -15,6 +16,7 @@ from urllib.parse import quote, unquote, urlsplit
 
 from app.documents import ROOT, DATA, load_documents
 from app.search import SearchEngine
+from app.hosting import CURRENT, visitor, BusyError
 from app.providers import settings, public_settings, save_settings, list_models, ProviderError
 from app.chat import social, retrieval_query, generate, model_available, MODEL, converse
 
@@ -24,18 +26,40 @@ FILES = {}
 ENGINE = None
 WEB = ROOT / 'web'
 
+def hosted():
+    return os.environ.get('ENU_HOSTED') == '1'
+
+def active_documents():
+    return CURRENT.get()['documents'] if CURRENT.get() is not None else DOCUMENTS
+
+def active_files():
+    return CURRENT.get()['files'] if CURRENT.get() is not None else FILES
+
+def active_engine():
+    return CURRENT.get()['engine'] if CURRENT.get() is not None else ENGINE
+
+def active_data():
+    return CURRENT.get()['data'] if CURRENT.get() is not None else DATA
+
+
 
 def rebuild():
     global DOCUMENTS, FILES, ENGINE
-    documents, files = load_documents()
+    space = CURRENT.get()
+    documents, files = load_documents(space['data'], include_root=False) if space is not None else load_documents()
+    if space is not None and sum(d['characters'] for d in documents) > 300000:
+        raise ValueError('Hosted workspace text limit exceeded')
     engine = SearchEngine([d for d in documents if d['status'] == 'ready'])
     with LOCK:
-        DOCUMENTS, FILES, ENGINE = documents, files, engine
+        if space is not None:
+            space.update(documents=documents, files=files, engine=engine)
+        else:
+            DOCUMENTS, FILES, ENGINE = documents, files, engine
     return len(documents)
 
 
 def public_docs():
-    return [{k: v for k, v in d.items() if k != 'pages'} for d in DOCUMENTS]
+    return [{k: v for k, v in d.items() if k != 'pages'} for d in active_documents()]
 
 
 def answer(query, language, role='student', topic='all', document_ids=None, history=None, conversation_mode="documents"):
@@ -55,7 +79,7 @@ def answer(query, language, role='student', topic='all', document_ids=None, hist
         return {'status': kind, 'message': '', 'sources': [], 'mode': 'conversation', 'steps': [], 'elapsed_ms': 0}
     effective = retrieval_query(query, history)
     with LOCK:
-        hits = ENGINE.search(effective, role=role, topic=topic, document_ids=document_ids)
+        hits = active_engine().search(effective, role=role, topic=topic, document_ids=document_ids)
     matching_language = [s for s in hits if (len(re.findall('[әғқңөұүһі]', s['text'].lower())) >= 8) == kk]
     if matching_language:
         hits = matching_language
@@ -112,6 +136,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Referrer-Policy', 'no-referrer')
         self.send_header('Cache-Control', 'no-store')
+        if self.new_cookie:
+            self.send_header('Set-Cookie', 'enu_session=' + self.new_cookie + '; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=1800')
+        self.send_header('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
         self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
         for key, value in (extra or {}).items():
             self.send_header(key, value)
@@ -122,14 +149,45 @@ class Handler(BaseHTTPRequestHandler):
         self.send_bytes(json.dumps(obj, ensure_ascii=False).encode(), 'application/json; charset=utf-8', status)
 
     def valid_host(self):
-        return self.headers.get('Host') in {f'127.0.0.1:{self.server.server_port}', f'localhost:{self.server.server_port}'}
+        hosts = {f'127.0.0.1:{self.server.server_port}', f'localhost:{self.server.server_port}'}
+        public = os.environ.get('RENDER_EXTERNAL_HOSTNAME') or os.environ.get('ENU_PUBLIC_HOST')
+        if hosted() and public and re.fullmatch(r'[a-zA-Z0-9.-]+', public):
+            hosts.update({public, public + ':443'})
+        return self.headers.get('Host') in hosts
+
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(30)
+        self.new_cookie = None
+
+    def route(self, action):
+        if not hosted():
+            return action()
+        if not self.valid_host():
+            return self.json({'error': 'Invalid host'}, 403)
+        if urlsplit(self.path).path == '/healthz' and self.command == 'GET':
+            return self.json({'status': 'ok'})
+        try:
+            with visitor(self.headers.get('Cookie')) as (space, token):
+                self.new_cookie = token
+                return action()
+        except BusyError:
+            return self.json({'error': 'Demo busy; please try again later'}, 503)
 
     def do_GET(self):
+        return self.route(self.get)
+
+    def do_POST(self):
+        return self.route(self.post)
+
+    def get(self):
         if not self.valid_host():
             return self.json({'error': 'Invalid host'}, 403)
         path = urlsplit(self.path).path
+        if path == '/healthz':
+            return self.json({'status': 'ok'})
         if path == '/api/health':
-            return self.json({'status': 'ok', 'documents': len(DOCUMENTS), 'chunks': len(ENGINE.chunks), 'model': 'TF-IDF + LSA (TruncatedSVD)', 'local': True, 'chat_model': MODEL, 'chat_available': model_available(), 'settings': public_settings()})
+            return self.json({'status': 'ok', 'documents': len(active_documents()), 'chunks': len(active_engine().chunks), 'model': 'TF-IDF + LSA (TruncatedSVD)', 'local': not hosted(), 'hosted': hosted(), 'chat_model': MODEL, 'chat_available': model_available(), 'settings': public_settings()})
         if path == '/api/settings':
             return self.json(public_settings())
         if path == '/api/documents':
@@ -140,14 +198,14 @@ class Handler(BaseHTTPRequestHandler):
             parts = path.split('/')
             if len(parts) != 6 or not parts[5].isdigit():
                 return self.json({'error': 'Invalid page'}, 400)
-            file = FILES.get(parts[3])
-            doc = next((d for d in DOCUMENTS if d['id'] == parts[3]), None)
+            file = active_files().get(parts[3])
+            doc = next((d for d in active_documents() if d['id'] == parts[3]), None)
             page_number = int(parts[5])
             if not file or file.suffix.lower() != '.pdf' or not doc or not 1 <= page_number <= doc['page_count']:
                 return self.json({'error': 'Page not found'}, 404)
             if not shutil.which('pdftoppm'):
                 return self.json({'error': 'PDF preview requires Poppler'}, 503)
-            folder = DATA / 'previews'
+            folder = active_data() / 'previews'
             folder.mkdir(exist_ok=True)
             prefix = folder / f'{parts[3]}-{page_number}'
             image = prefix.with_suffix('.png')
@@ -160,7 +218,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json({'error': 'Preview unavailable'}, 503)
         if path.startswith('/api/documents/') and path.endswith('/file'):
             doc_id = path.split('/')[3]
-            file = FILES.get(doc_id)
+            file = active_files().get(doc_id)
             if not file:
                 return self.json({'error': 'Document not found'}, 404)
             return self.send_bytes(file.read_bytes(), mimetypes.guess_type(file.name)[0] or 'application/octet-stream', extra={'Content-Disposition': f"inline; filename*=UTF-8''{quote(file.name)}"})
@@ -170,19 +228,32 @@ class Handler(BaseHTTPRequestHandler):
         file = WEB / allowed[path]
         self.send_bytes(file.read_bytes(), (mimetypes.guess_type(file.name)[0] or 'text/plain') + '; charset=utf-8')
 
-    def do_POST(self):
+    def post(self):
         if not self.valid_host():
             return self.json({'error': 'Invalid host'}, 403)
         origin = self.headers.get('Origin')
-        if origin and origin not in {f'http://127.0.0.1:{self.server.server_port}', f'http://localhost:{self.server.server_port}'}:
+        origins = {f'http://127.0.0.1:{self.server.server_port}', f'http://localhost:{self.server.server_port}'}
+        public = os.environ.get('RENDER_EXTERNAL_HOSTNAME') or os.environ.get('ENU_PUBLIC_HOST')
+        if hosted() and public:
+            origins.add('https://' + public)
+        if (origin and origin not in origins) or (hosted() and not origin):
             return self.json({'error': 'Cross-origin request rejected'}, 403)
         path = urlsplit(self.path).path
         try:
             size = int(self.headers.get('Content-Length', '0'))
         except ValueError:
             return self.json({'error': 'Invalid content length'}, 400)
-        if size < 1 or size > (20_000_000 if path == '/api/upload' else 12000):
+        if size < 1 or size > ((5_000_000 if hosted() else 20_000_000) if path == '/api/upload' else 12000):
             return self.json({'error': 'Размер запроса превышает допустимый / Сұрау тым үлкен'}, 413)
+        if hosted():
+            space = CURRENT.get()
+            now = time.monotonic()
+            space['requests'] = [t for t in space['requests'] if now - t < 600]
+            if len(space['requests']) >= 40:
+                return self.json({'error': 'Demo request limit reached. Try again later.'}, 429)
+            space['requests'].append(now)
+            if path == '/api/upload' and len(space['files']) >= 3:
+                return self.json({'error': 'Hosted demo allows up to 3 documents per session'}, 413)
         raw = self.rfile.read(size)
         try:
             if path == '/api/upload':
@@ -192,13 +263,17 @@ class Handler(BaseHTTPRequestHandler):
                 suffix = Path(name).suffix.lower()
                 if suffix not in {'.pdf', '.docx'} or (suffix == '.pdf' and not raw.startswith(b'%PDF-')) or (suffix == '.docx' and not raw.startswith(b'PK')):
                     return self.json({'error': 'Допустимы только PDF и DOCX'}, 400)
-                target = DATA / 'documents' / name
+                target = active_data() / 'documents' / name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 if target.exists():
                     return self.json({'error': 'Файл с таким именем уже существует'}, 409)
                 with target.open('xb') as stream:
                     stream.write(raw)
-                count = rebuild()
+                try:
+                    count = rebuild()
+                except ValueError:
+                    target.unlink(missing_ok=True)
+                    return self.json({'error': 'Document exceeds hosted demo limits'}, 413)
                 return self.json({'status': 'ok', 'documents': count})
             if self.headers.get('Content-Type', '').split(';')[0] != 'application/json':
                 return self.json({'error': 'Expected application/json'}, 415)
@@ -236,12 +311,34 @@ class Handler(BaseHTTPRequestHandler):
             return self.json({'error': f'Не удалось обработать запрос: {type(exc).__name__}'}, 400)
 
 
+class DemoServer(ThreadingHTTPServer):
+    daemon_threads = True
+    slots = threading.BoundedSemaphore(12)
+
+    def process_request(self, request, client_address):
+        if not self.slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self.slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.slots.release()
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('--host', default='0.0.0.0' if hosted() else '127.0.0.1')
     parser.add_argument('--port', type=int, default=int(os.environ.get('PORT', '8777')))
     args = parser.parse_args()
     # Start only the installed local runtime; never download a model implicitly.
-    if shutil.which('ollama'):
+    if not hosted() and shutil.which('ollama'):
         try:
             from urllib.request import urlopen
             with urlopen('http://127.0.0.1:11434/api/tags', timeout=1):
@@ -249,6 +346,9 @@ if __name__ == '__main__':
         except OSError:
             subprocess.Popen(['ollama', 'serve'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     print('Индексация документов…', flush=True)
-    rebuild()
-    print(f'ENU Көмек: http://127.0.0.1:{args.port} — {len(DOCUMENTS)} документов, {len(ENGINE.chunks)} фрагментов', flush=True)
-    ThreadingHTTPServer(('127.0.0.1', args.port), Handler).serve_forever()
+    if hosted():
+        ENGINE = SearchEngine([])
+    else:
+        rebuild()
+    print(f'ENU Көмек: http://127.0.0.1:{args.port} — {len(active_documents())} документов, {len(active_engine().chunks)} фрагментов', flush=True)
+    DemoServer((args.host, args.port), Handler).serve_forever()

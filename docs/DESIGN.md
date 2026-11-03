@@ -4,7 +4,7 @@ Purpose: help an ENU student find a documented answer and inspect its source.
 Primary action: ask a question in Kazakh or Russian. Secondary: browse/upload sources.
 Reference: user-provided ENU competition criteria and local PDF/DOCX corpus.
 
-Calm university workspace: forest green, warm off-white, restrained lime and clay accents.
+Current visual direction: white workspace, black text/navigation, deep navy #142e52 for primary actions and selected controls. Neutral grays separate surfaces.
 Persistent desktop navigation, question field in the main column, source coverage on the right.
 Mobile navigation replaces the sidebar below 700px. Intended viewports: desktop 1440x900,
 mobile 390x844. Document titles wrap. No external fonts, trackers or image services.
@@ -25,7 +25,7 @@ The source role classifier is a usability filter, NOT an authorization boundary.
 ## Model workspace redesign — 2026-11-03
 
 Primary action remains asking a question; active model is visible in the header and composer.
-Navy navigation, white paper canvas, cobalt actions and amber source accents distinguish the
+Black navigation, a white paper canvas and deep-navy actions distinguish the
 conversation, model configuration and document evidence. Existing framework-free controls stay.
 
 Model settings: provider selector, password field (never prefilled), server-side saved-key status,
@@ -35,6 +35,11 @@ Partial: a successful models.list is not proof that every model permits generate
 errors prompt switching models. Permission: document snippets go to Google only after an explicit
 checkbox is enabled. Questions in Gemini general chat go to Google. Secrets never enter localStorage.
 
-Review targets: 1440x900 desktop, actual 500x812 narrow browser viewport (host minimum width).
-375px remains a limitation unless true emulation is available. Review focus labels, keyboard modal
+Review targets: 1440x900 desktop and 375x812 mobile using true browser device emulation. Review focus labels, keyboard modal
 focus trapping, reduced motion, long model ids, input states and horizontal overflow.
+
+## White / black / navy refinement
+
+User preference: white, black and deep navy. Primary work is chatting and checking sources; the composer is moved higher by compacting the welcome area. Bright cobalt, green and amber decorative accents are removed. Single navy SVG brand, consistent icon treatment, white new-conversation button on black navigation, navy send button and selected controls. Body and secondary text sizes increased. Error/OCR statuses retain explicit text and a border, not color alone.
+
+Targets: 1440x900 and 375x812 in true browser device emulation. Check home, document library, model settings, empty search, request error, source answer and mobile navigation. No new dependencies or external assets. Functional API and key handling unchanged.

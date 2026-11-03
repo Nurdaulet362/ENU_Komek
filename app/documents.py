@@ -64,9 +64,11 @@ def extract(path: Path) -> list[dict]:
     return [{'page': i + 1, 'text': text, 'location': 'section'} for i, text in enumerate(sections)]
 
 
-def load_documents() -> tuple[list[dict], dict[str, Path]]:
-    CACHE.mkdir(parents=True, exist_ok=True)
-    candidates = list(ROOT.glob('*')) + list((DATA / 'documents').glob('*'))
+def load_documents(data=None, include_root=True) -> tuple[list[dict], dict[str, Path]]:
+    data = data or DATA
+    cache = data / 'extracted' if data != DATA else CACHE
+    cache.mkdir(parents=True, exist_ok=True)
+    candidates = (list(ROOT.glob('*')) if include_root else []) + list((data / 'documents').glob('*'))
     documents, files, seen = [], {}, set()
     for path in sorted(candidates):
         if not path.is_file() or path.suffix.lower() not in SUPPORTED:
@@ -77,7 +79,7 @@ def load_documents() -> tuple[list[dict], dict[str, Path]]:
         seen.add(digest)
         doc_id = digest[:16]
         title = title_for(path)
-        cache_path = CACHE / f'{digest}.json'
+        cache_path = cache / f'{digest}.json'
         error = None
         try:
             if cache_path.exists():

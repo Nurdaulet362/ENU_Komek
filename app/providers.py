@@ -7,6 +7,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from .hosting import CURRENT
 
 CONFIG = Path(__file__).resolve().parents[1] / '.env'
 LOCK = threading.RLock()
@@ -30,6 +31,9 @@ ENV_KEYS = {'gemini': 'GEMINI_API_KEY', 'openai': 'OPENAI_API_KEY', 'anthropic':
 
 
 def read_values():
+    space = CURRENT.get()
+    if space is not None:
+        return dict(space['values'])
     values = {}
     if CONFIG.exists():
         for line in CONFIG.read_text().splitlines():
@@ -52,14 +56,14 @@ def settings(provider=None):
     if provider == 'local':
         model = LOCAL_MODEL
     return {'provider': provider, 'model': model,
-            'key': values.get(KEY_NAMES.get(provider, ''), os.environ.get(ENV_KEYS.get(provider, ''), '')),
+            'key': values.get(KEY_NAMES.get(provider, ''), (os.environ.get(ENV_KEYS.get(provider, ''), '') if CURRENT.get() is None else '')),
             'allow_documents': values.get('ENU_' + provider.upper() + '_DOCUMENTS', values.get('ENU_ALLOW_CLOUD_DOCUMENTS', False) if provider == 'gemini' else False) is True}
 
 
 def public_settings():
     c = settings()
     per_provider = {provider: {'key_saved': bool(settings(provider)['key']), 'model': settings(provider)['model'], 'allow_documents': settings(provider)['allow_documents']} for provider in PROVIDERS}
-    return {'provider': c['provider'], 'model': c['model'], 'key_saved': bool(c['key']), 'allow_documents': c['allow_documents'], 'providers': per_provider}
+    return {'provider': c['provider'], 'model': c['model'], 'key_saved': bool(c['key']), 'allow_documents': c['allow_documents'], 'providers': per_provider, 'hosted': CURRENT.get() is not None}
 
 
 def save_settings(body):
@@ -69,6 +73,8 @@ def save_settings(body):
         target = body.get('key_provider', provider)
         if provider not in PROVIDERS or target not in PROVIDERS:
             raise ValueError('Invalid provider')
+        if CURRENT.get() is not None and provider == 'local':
+            raise ValueError('Local Ollama is not available on this hosted demo')
         model = body.get('model', settings(provider)['model'])
         if not isinstance(model, str) or not re.fullmatch(r'[a-zA-Z0-9._:/-]{0,140}', model):
             raise ValueError('Invalid model')
@@ -85,6 +91,10 @@ def save_settings(body):
                 values['ENU_' + target.upper() + '_DOCUMENTS'] = body['allow_documents']
         values.update(ENU_PROVIDER=provider, ENU_MODEL=model)
         values['ENU_' + provider.upper() + '_MODEL'] = model
+        if CURRENT.get() is not None:
+            CURRENT.get()['values'].clear()
+            CURRENT.get()['values'].update(values)
+            return public_settings()
         existing = [line for line in CONFIG.read_text().splitlines() if line.partition('=')[0] not in values] if CONFIG.exists() else []
         temp = CONFIG.with_name('.env.tmp')
         fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)

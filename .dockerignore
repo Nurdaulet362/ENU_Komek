@@ -1,0 +1,11 @@
+**
+!Dockerfile
+!requirements.txt
+!server.py
+!app/
+!app/*.py
+!web/
+!web/*.html
+!web/*.js
+!web/*.css
+!web/*.svg

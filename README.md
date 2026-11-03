@@ -113,3 +113,7 @@ General chat sends questions and prior user questions to Google when Gemini is s
 The provider selector now includes **ChatGPT · OpenAI API** and **Claude · Anthropic API** alongside Gemini and local Ollama. Each cloud provider keeps a separate server-side key, model preference and document-sharing permission. Select the provider, enter its own API key, click the model-loading button, choose a text model and save. Saving or testing a new key does not change the active provider until you save the selection. Blank key fields preserve saved values; clearing affects only the selected provider.
 
 OpenAI uses native `/v1/responses` with JSON schema output and `store: false`; Claude uses native `/v1/messages` with `output_config.format`. Model lists come from the respective official APIs. Missing keys show a setup message and never borrow another provider's credentials. Live OpenAI/Anthropic inference has not been verified without their keys; request construction and parsing have been checked with fixtures.
+
+## Public demo on Render Free
+
+See [Render deployment](docs/RENDER.md). The Dockerfile and render.yaml select a Free web service. Public visitors use isolated temporary workspaces and their own API keys; Ollama and the developer’s local document corpus are not available online. Free-tier restarts discard visitor files/settings. No paid disk or database is required.

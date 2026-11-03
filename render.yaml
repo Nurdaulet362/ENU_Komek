@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: enu-komek
+    runtime: docker
+    plan: free
+    region: frankfurt
+    branch: main
+    healthCheckPath: /healthz
+    envVars:
+      - key: ENU_HOSTED
+        value: "1"

@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+enu-data/extracted/
+enu-data/previews/
+qa/
+.env
+# University source material stays on this computer.
+*.pdf
+*.docx
+*.png
+*.jpg
+enu-data/catalog.json
+enu-data/documents/
+
+enu-data/ocr-languages/
+
+.env.*
